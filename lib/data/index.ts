@@ -6,6 +6,10 @@ export { tasks } from "@/lib/data/tasks";
 export { inventory } from "@/lib/data/inventory";
 export { providers } from "@/lib/data/providers";
 
+// Frozen "today" for this fictional scenario, so due-date urgency stays
+// meaningful regardless of when the app is actually run.
+export const SCENARIO_TODAY = "2026-10-25";
+
 // The starting point before any what-if changes are applied.
 export const baselineScenario: Scenario = {
   id: "baseline",

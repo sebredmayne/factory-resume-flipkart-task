@@ -113,13 +113,33 @@ export interface OutsourcingRecommendation {
   risks: string[];
 }
 
+export type FulfilmentLimitingFactor = "capacity" | "inventory" | "none";
+
+export interface OrderFulfilment {
+  orderId: string;
+  requestedQuantity: number;
+  fulfilledQuantity: number;
+  shortfall: number;
+  limitingFactor: FulfilmentLimitingFactor;
+}
+
 export interface RecoveryPlan {
+  workforceRequirements: WorkforceRequirement[];
   internalAllocations: WorkforceAllocation[];
   outsourcedVolumes: OutsourcingRecommendation[];
+  orderFulfilment: OrderFulfilment[];
   totalExpectedFulfilment: number;
   unfulfilledDemand: number;
   ordersAtRisk: string[];
   incrementalCost: number;
   constraintViolations: string[];
   generatedAt: string; // ISO date
+}
+
+export interface ScenarioComparison {
+  fulfilmentDelta: number;
+  costDelta: number;
+  atRiskCountDelta: number;
+  newlyAtRiskOrders: string[];
+  recoveredOrders: string[];
 }
