@@ -29,13 +29,21 @@ function scoreTask(task: Task, orders: OrderGroup[], tasks: Task[]): number {
   return demandScore * dependencyBoost;
 }
 
-// Tasks that cannot be outsourced (quality, safety-critical, exception
-// handling) are treated as mandatory: their minimum qualified staffing is
-// reserved before anything else is allocated.
-function orderTasksForAllocation(
+export interface AllocationPriorityEntry {
+  taskId: string;
+  isMandatory: boolean;
+  score: number;
+}
+
+// The order allocateWorkforce staffs tasks in: mandatory (non-outsourceable)
+// tasks are reserved first regardless of score, since skipping them risks
+// quality or safety. Everything else is ranked by demand-weighted priority
+// score, boosted for tasks that block other tasks downstream. Exposed so
+// the UI can explain exactly why a task was staffed before another.
+export function getAllocationPriorityOrder(
   tasks: Task[],
   orders: OrderGroup[]
-): Task[] {
+): AllocationPriorityEntry[] {
   const mandatory = tasks.filter((t) => !t.outsourcingEligible);
   const rest = tasks.filter((t) => t.outsourcingEligible);
 
@@ -45,7 +53,21 @@ function orderTasksForAllocation(
   }));
   scoredRest.sort((a, b) => b.score - a.score);
 
-  return [...mandatory, ...scoredRest.map((s) => s.task)];
+  return [
+    ...mandatory.map((task) => ({ taskId: task.id, isMandatory: true, score: Infinity })),
+    ...scoredRest.map(({ task, score }) => ({
+      taskId: task.id,
+      isMandatory: false,
+      score,
+    })),
+  ];
+}
+
+function orderTasksForAllocation(tasks: Task[], orders: OrderGroup[]): Task[] {
+  const taskById = new Map(tasks.map((t) => [t.id, t] as const));
+  return getAllocationPriorityOrder(tasks, orders)
+    .map((entry) => taskById.get(entry.taskId))
+    .filter((t): t is Task => t !== undefined);
 }
 
 interface Pool {
