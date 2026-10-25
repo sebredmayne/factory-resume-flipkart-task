@@ -9,11 +9,13 @@ import {
   ClipboardList,
   GitCompareArrows,
   Factory,
+  CalendarSync,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/today", label: "Daily loop", icon: CalendarSync },
   { href: "/workforce", label: "Workforce", icon: Users },
   { href: "/outsourcing", label: "Outsourcing", icon: Truck },
   { href: "/recovery", label: "Recovery Plan", icon: ClipboardList },

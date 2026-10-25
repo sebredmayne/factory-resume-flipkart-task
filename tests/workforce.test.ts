@@ -1,40 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { calculateWorkforceRequirements } from "@/lib/engine/workforce";
-import type { OrderGroup, Task, WorkforceGroup } from "@/lib/types";
+import { makeGroup, makeOrder, makeTask } from "./helpers";
 
-const task: Task = {
-  id: "t1",
-  name: "Test Task",
-  labourHoursPerUnit: 0.1,
-  requiredSkill: "picking",
-  maxThroughput: 1000,
-  prerequisites: [],
-  outsourcingEligible: true,
-};
-
-const order: OrderGroup = {
-  id: "o1",
-  sku: "X",
-  quantity: 500,
-  priority: "high",
-  dueAt: "2026-10-30",
-  location: "A",
-  requiredProcessingSteps: ["t1"],
-  unitValue: 10,
-};
+const task = makeTask({ id: "t1", maxThroughput: 1000 });
+const order = makeOrder({ id: "o1", quantity: 500 });
 
 describe("calculateWorkforceRequirements", () => {
   it("computes required labour hours, required workers (rounded up), and shortfall", () => {
-    const workforce: WorkforceGroup[] = [
-      {
-        skill: "picking",
-        availableWorkers: 5,
-        hoursPerShift: 8,
-        productivityPerHour: 10,
-        qualification: "q",
-        taskEligibility: ["t1"],
-      },
-    ];
+    const workforce = [makeGroup({ id: "g1", taskEligibility: ["t1"] })];
 
     const [requirement] = calculateWorkforceRequirements([order], [task], workforce);
 
@@ -46,23 +19,9 @@ describe("calculateWorkforceRequirements", () => {
   });
 
   it("does not count workers who are in the right skill but not eligible for the task", () => {
-    const workforce: WorkforceGroup[] = [
-      {
-        skill: "picking",
-        availableWorkers: 5,
-        hoursPerShift: 8,
-        productivityPerHour: 10,
-        qualification: "q",
-        taskEligibility: ["t1"],
-      },
-      {
-        skill: "picking",
-        availableWorkers: 20,
-        hoursPerShift: 8,
-        productivityPerHour: 10,
-        qualification: "different cert",
-        taskEligibility: ["some-other-task"],
-      },
+    const workforce = [
+      makeGroup({ id: "g1", taskEligibility: ["t1"] }),
+      makeGroup({ id: "g2", availableWorkers: 20, taskEligibility: ["some-other-task"] }),
     ];
 
     const [requirement] = calculateWorkforceRequirements([order], [task], workforce);
@@ -70,16 +29,33 @@ describe("calculateWorkforceRequirements", () => {
     expect(requirement.availableQualifiedWorkers).toBe(5);
   });
 
+  it("reports cross-trainable workers separately, and none for certified-only tasks", () => {
+    const workforce = [
+      makeGroup({ id: "own", taskEligibility: ["t1"] }),
+      makeGroup({
+        id: "other",
+        skill: "packing",
+        availableWorkers: 6,
+        taskEligibility: ["t2"],
+        crossSkills: [{ taskId: "t1", productivityFactor: 0.5, rampUpHours: 2 }],
+      }),
+    ];
+
+    const [open] = calculateWorkforceRequirements([order], [task], workforce);
+    const [certified] = calculateWorkforceRequirements(
+      [order],
+      [{ ...task, crossTrainingAllowed: false }],
+      workforce
+    );
+
+    expect(open.availableQualifiedWorkers).toBe(5);
+    expect(open.crossTrainableWorkers).toBe(6);
+    expect(certified.crossTrainableWorkers).toBe(0);
+  });
+
   it("caps expected output at the task's physical max throughput", () => {
-    const workforce: WorkforceGroup[] = [
-      {
-        skill: "picking",
-        availableWorkers: 1000,
-        hoursPerShift: 8,
-        productivityPerHour: 100,
-        qualification: "q",
-        taskEligibility: ["t1"],
-      },
+    const workforce = [
+      makeGroup({ id: "g1", availableWorkers: 1000, productivityPerHour: 100, taskEligibility: ["t1"] }),
     ];
 
     const [requirement] = calculateWorkforceRequirements([order], [task], workforce);

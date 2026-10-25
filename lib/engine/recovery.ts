@@ -1,8 +1,11 @@
 import type {
+  DailyDemand,
   ExternalProvider,
   InventoryItem,
+  LastMileLane,
   OrderFulfilment,
-  OrderGroup,
+  OrderInput,
+  Product,
   RecoveryPlan,
   Scenario,
   Task,
@@ -11,30 +14,52 @@ import type {
 import { calculateWorkforceRequirements, taskDemandVolume } from "@/lib/engine/workforce";
 import { allocateWorkforce } from "@/lib/engine/allocation";
 import { evaluateOutsourcing } from "@/lib/engine/outsourcing";
-import { compareOrdersByUrgency } from "@/lib/engine/priority";
+import {
+  compareOrdersByDueDate,
+  compareOrdersByUrgency,
+  prioritiseOrders,
+} from "@/lib/engine/priority";
 
 export interface BaseData {
-  orders: OrderGroup[];
+  orders: OrderInput[];
+  products: Product[];
   tasks: Task[];
   workforce: WorkforceGroup[];
   inventory: InventoryItem[];
   providers: ExternalProvider[];
+  lastMile: LastMileLane[];
+  dailyDemand: DailyDemand[];
 }
 
 interface AdjustedData {
-  orders: OrderGroup[];
   workforce: WorkforceGroup[];
   inventory: InventoryItem[];
   providers: ExternalProvider[];
+  lastMile: LastMileLane[];
+}
+
+// "managed" is the Factory Resume plan. "unmanaged" is the counterfactual a
+// floor falls back to without one — everyone on their own task, no
+// partners, orders shipped first-due-first — so the plan's value is
+// measured against something real rather than asserted.
+export type PlanStrategy = "managed" | "unmanaged";
+
+export interface PlanContext {
+  dayIndex?: number;
+  providerRequestDay?: Record<string, number>;
+  calibration?: Record<string, number>;
+  strategy?: PlanStrategy;
 }
 
 // Applies a scenario's overrides on top of the base operational data.
 // Overrides replace a single entity's value; anything not named in the
-// scenario is left untouched.
+// scenario is left untouched. Demand shift doesn't touch today's backlog —
+// those orders already exist — it shapes the new orders the daily loop
+// generates.
 export function applyScenario(data: BaseData, scenario: Scenario): AdjustedData {
   const workforce = data.workforce.map((group) => {
     const override = scenario.workforceAvailability.find(
-      (o) => o.skill === group.skill
+      (o) => o.groupId === group.id
     );
     return override
       ? { ...group, availableWorkers: override.availableWorkers }
@@ -59,43 +84,70 @@ export function applyScenario(data: BaseData, scenario: Scenario): AdjustedData 
       : item;
   });
 
-  const orders = data.orders.map((order) => ({
-    ...order,
-    quantity: Math.round(order.quantity * scenario.demandMultiplier),
-  }));
+  const lastMile = data.lastMile.map((lane) => {
+    const override = scenario.lastMileOverrides.find(
+      (o) => o.location === lane.location
+    );
+    return override ? { ...lane, capacityPerDay: override.capacityPerDay } : lane;
+  });
 
-  return { orders, workforce, inventory, providers };
+  return { workforce, inventory, providers, lastMile };
 }
 
-// Function D — orchestrates A, B and C, then resolves per-order fulfilment
-// against both task capacity (internal + outsourced) and usable inventory,
-// processing the backlog in priority order so higher-priority orders claim
-// scarce capacity and stock first.
+function pickLimitingFactor(
+  capacity: number,
+  inventory: number,
+  lastMile: number
+): OrderFulfilment["limitingFactor"] {
+  const smallest = Math.min(capacity, inventory, lastMile);
+  if (capacity === smallest) return "capacity";
+  if (inventory === smallest) return "inventory";
+  return "last_mile";
+}
+
+// Function D — orchestrates A, B and C for one day, then resolves per-order
+// fulfilment against task capacity (internal + outsourced), usable
+// inventory and last-mile capacity, processing the backlog in priority
+// order so essential, urgent orders claim scarce capacity first.
 export function generateRecoveryPlan(
   scenario: Scenario,
   data: BaseData,
-  today: string
+  today: string,
+  context: PlanContext = {}
 ): RecoveryPlan {
+  const {
+    dayIndex = 0,
+    providerRequestDay = {},
+    calibration = {},
+    strategy = "managed",
+  } = context;
+  const managed = strategy === "managed";
   const adjusted = applyScenario(data, scenario);
+  const orders = prioritiseOrders(data.orders, data.products, today);
 
   const workforceRequirements = calculateWorkforceRequirements(
-    adjusted.orders,
+    orders,
     data.tasks,
     adjusted.workforce
   );
-  const internalAllocations = allocateWorkforce(
+  const { allocations: internalAllocations, redeployments } = allocateWorkforce(
     workforceRequirements,
     data.tasks,
     adjusted.workforce,
-    adjusted.orders
+    orders,
+    { allowRedeployment: managed, calibration }
   );
-  const outsourcedVolumes = evaluateOutsourcing(
-    data.tasks,
-    adjusted.orders,
-    internalAllocations,
-    adjusted.providers,
-    today
-  );
+  const { recommendations: outsourcedVolumes, requestAdvice: providerRequests } =
+    managed
+      ? evaluateOutsourcing(
+          data.tasks,
+          orders,
+          internalAllocations,
+          adjusted.providers,
+          today,
+          { dayIndex, providerRequestDay }
+        )
+      : { recommendations: [], requestAdvice: [] };
 
   const outsourcedByTaskId = new Map<string, number>();
   for (const rec of outsourcedVolumes) {
@@ -121,18 +173,27 @@ export function generateRecoveryPlan(
     );
   }
 
+  const lastMileRemaining = new Map<string, number>();
+  for (const lane of adjusted.lastMile) {
+    lastMileRemaining.set(lane.location, lane.capacityPerDay);
+  }
+
   const constraintViolations: string[] = [];
   const orderFulfilment: OrderFulfilment[] = [];
-  const sortedOrders = [...adjusted.orders].sort(compareOrdersByUrgency);
+  const sortedOrders = [...orders].sort(
+    managed ? compareOrdersByUrgency : compareOrdersByDueDate
+  );
 
   for (const order of sortedOrders) {
-    const hasInventoryRecord = inventoryRemaining.has(order.sku);
-    if (!hasInventoryRecord) {
+    if (!inventoryRemaining.has(order.sku)) {
       constraintViolations.push(
         `No inventory record found for SKU ${order.sku} — treated as zero usable stock.`
       );
     }
     const availableInventory = inventoryRemaining.get(order.sku) ?? 0;
+    // A location with no lane on file is treated as unconstrained, so
+    // datasets without last-mile data still plan.
+    const availableLastMile = lastMileRemaining.get(order.location) ?? Infinity;
 
     const capacityLimit = order.requiredProcessingSteps.reduce(
       (min, taskId) =>
@@ -142,17 +203,19 @@ export function generateRecoveryPlan(
 
     const fulfilledQuantity = Math.max(
       0,
-      Math.min(order.quantity, availableInventory, capacityLimit)
+      Math.min(order.quantity, availableInventory, capacityLimit, availableLastMile)
     );
     const shortfall = order.quantity - fulfilledQuantity;
 
-    let limitingFactor: OrderFulfilment["limitingFactor"] = "none";
-    if (shortfall > 0) {
-      limitingFactor =
-        capacityLimit <= availableInventory ? "capacity" : "inventory";
-    }
+    const limitingFactor: OrderFulfilment["limitingFactor"] =
+      shortfall > 0
+        ? pickLimitingFactor(capacityLimit, availableInventory, availableLastMile)
+        : "none";
 
     inventoryRemaining.set(order.sku, availableInventory - fulfilledQuantity);
+    if (lastMileRemaining.has(order.location)) {
+      lastMileRemaining.set(order.location, availableLastMile - fulfilledQuantity);
+    }
     for (const taskId of order.requiredProcessingSteps) {
       taskRemainingCapacity.set(
         taskId,
@@ -170,13 +233,23 @@ export function generateRecoveryPlan(
   }
 
   for (const task of data.tasks) {
-    const demand = taskDemandVolume(task.id, adjusted.orders);
+    const demand = taskDemandVolume(task.id, orders);
     const achievable =
       (internalAllocations.find((a) => a.taskId === task.id)?.resultingCapacity ?? 0) +
       (outsourcedByTaskId.get(task.id) ?? 0);
     if (achievable < demand) {
       constraintViolations.push(
-        `${task.name}: ${demand - achievable} units of unmet demand even after outsourcing (${demand} required, ${achievable} achievable).`
+        `${task.name}: ${demand - achievable} units of unmet demand even after ${managed ? "redeployment and outsourcing" : "staffing every own-skill worker"} (${demand} required, ${achievable} achievable).`
+      );
+    }
+  }
+  for (const lane of adjusted.lastMile) {
+    const demand = orders
+      .filter((o) => o.location === lane.location)
+      .reduce((sum, o) => sum + o.quantity, 0);
+    if (demand > lane.capacityPerDay) {
+      constraintViolations.push(
+        `Last mile from ${lane.location}: ${lane.carrier} can move ${lane.capacityPerDay} units/day against ${demand} pending.`
       );
     }
   }
@@ -189,6 +262,10 @@ export function generateRecoveryPlan(
     (sum, f) => sum + f.shortfall,
     0
   );
+  const essentialIds = new Set(
+    orders.filter((o) => o.essentiality === "essential").map((o) => o.id)
+  );
+  const essentialFulfilment = orderFulfilment.filter((f) => essentialIds.has(f.orderId));
   const ordersAtRisk = orderFulfilment
     .filter((f) => f.shortfall > 0)
     .map((f) => f.orderId);
@@ -198,12 +275,18 @@ export function generateRecoveryPlan(
   );
 
   return {
+    dayIndex,
+    orders,
     workforceRequirements,
     internalAllocations,
+    redeployments,
     outsourcedVolumes,
+    providerRequests,
     orderFulfilment,
     totalExpectedFulfilment,
     unfulfilledDemand,
+    essentialUnitsRequested: essentialFulfilment.reduce((s, f) => s + f.requestedQuantity, 0),
+    essentialUnitsFulfilled: essentialFulfilment.reduce((s, f) => s + f.fulfilledQuantity, 0),
     ordersAtRisk,
     incrementalCost,
     constraintViolations,

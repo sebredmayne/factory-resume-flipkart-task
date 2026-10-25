@@ -15,22 +15,19 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CalendarClock, ShieldCheck } from "lucide-react";
 import {
-  orders,
-  workforce,
+  baseData,
   tasks,
-  inventory,
   providers,
   baselineScenario,
   SCENARIO_TODAY,
 } from "@/lib/data";
-import { generateRecoveryPlan, type BaseData } from "@/lib/engine";
-import { formatCurrency, formatNumber } from "@/lib/format";
+import { generateRecoveryPlan } from "@/lib/engine";
+import { formatCurrency, formatDay, formatNumber } from "@/lib/format";
 
 export default function OutsourcingPage() {
-  const data: BaseData = { orders, tasks, workforce, inventory, providers };
-  const plan = generateRecoveryPlan(baselineScenario, data, SCENARIO_TODAY);
+  const plan = generateRecoveryPlan(baselineScenario, baseData, SCENARIO_TODAY);
 
   const providerById = new Map(providers.map((p) => [p.id, p] as const));
 
@@ -57,17 +54,57 @@ export default function OutsourcingPage() {
         <p className="text-muted-foreground">
           {plan.outsourcedVolumes.length} recommended engagements ·{" "}
           {formatNumber(totalRecommendedVolume)} units ·{" "}
-          {formatCurrency(plan.incrementalCost)} incremental cost.
+          {formatCurrency(plan.incrementalCost)} incremental cost today.
+          Partners count only for the hours they&apos;re actually live, and
+          volume is bought only up to what the rest of the line can ship.
         </p>
       </div>
+
+      {plan.providerRequests.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CalendarClock className="h-4 w-4" />
+              Request today — for tomorrow
+            </CardTitle>
+            <CardDescription>
+              These partners can&apos;t help today because of activation lead
+              time, but the gap is still there tomorrow. Requesting them now
+              is what makes {formatDay(1)}&apos;s plan possible.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {plan.providerRequests.map((advice) => {
+              const provider = providerById.get(advice.providerId)!;
+              return (
+                <div key={`${advice.providerId}-${advice.taskId}`} className="flex flex-col gap-1 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{provider.name}</span>
+                    <Badge variant="outline">
+                      {tasks.find((t) => t.id === advice.taskId)?.name}
+                    </Badge>
+                    <Badge variant="secondary">
+                      Full capacity from {formatDay(advice.availableFromDay)}
+                    </Badge>
+                  </div>
+                  <p className="text-muted-foreground">{advice.reason}</p>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       {plan.outsourcedVolumes.length === 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>No outsourcing needed</CardTitle>
+            <CardTitle>No partner volume worth buying today</CardTitle>
             <CardDescription>
-              Internal capacity currently covers demand for every
-              outsourcing-eligible task under this plan.
+              Partners live today only serve steps that aren&apos;t the
+              bottleneck. Buying picking or dispatch capacity while packing
+              can&apos;t keep up would be spend with nothing to show for it —
+              so today the lever is redeployment, and tomorrow&apos;s is the
+              partners requested above.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -82,9 +119,9 @@ export default function OutsourcingPage() {
               <CardHeader>
                 <CardTitle>{task.name}</CardTitle>
                 <CardDescription>
-                  Internal capacity falls short of demand for this task — the
-                  engine evaluated eligible providers by cost, location, and
-                  activation time.
+                  Internal capacity, after redeployment, falls short for this
+                  task — the engine evaluated eligible providers by cost,
+                  location, and how much of today they can actually be live.
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
@@ -104,7 +141,8 @@ export default function OutsourcingPage() {
                           <div className="text-sm text-muted-foreground">
                             {formatCurrency(rec.estimatedCost)} ·{" "}
                             {formatCurrency(provider.costPerUnit)}/unit ·{" "}
-                            {provider.activationHours}h activation
+                            {provider.activationHours}h activation ·{" "}
+                            {Math.round(rec.availableFraction * 100)}% of today live
                           </div>
                         </div>
                         <p className="text-sm text-muted-foreground">{rec.rationale}</p>
@@ -187,7 +225,7 @@ export default function OutsourcingPage() {
                     <div className="flex flex-wrap gap-1">
                       {provider.services.map((service) => (
                         <Badge key={service} variant="outline">
-                          {service}
+                          {tasks.find((t) => t.id === service)?.name ?? service}
                         </Badge>
                       ))}
                     </div>

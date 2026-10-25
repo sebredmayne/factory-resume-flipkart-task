@@ -31,24 +31,33 @@ import {
 } from "@/components/ui/table";
 import { PlanSummary } from "@/components/recovery/plan-summary";
 import {
-  orders,
+  baseData,
   workforce,
   tasks,
   inventory,
   providers,
+  lastMile,
   baselineScenario,
   SCENARIO_TODAY,
 } from "@/lib/data";
 import {
-  generateRecoveryPlan,
+  bindingConstraint,
   simulateScenario,
-  type BaseData,
   type ScenarioChanges,
 } from "@/lib/engine";
-import { formatCurrency, formatNumber } from "@/lib/format";
+import type { Essentiality } from "@/lib/types";
+import {
+  formatCurrency,
+  formatDay,
+  formatEssentiality,
+  formatNumber,
+  formatPercent,
+} from "@/lib/format";
 
-const data: BaseData = { orders, tasks, workforce, inventory, providers };
-
+const OUTLOOK_DAYS = 5;
+const ESSENTIALITIES: Essentiality[] = ["essential", "everyday", "discretionary"];
+const baselineShiftPct = (e: Essentiality) =>
+  Math.round(baselineScenario.demandShift[e] * 100);
 function DeltaBadge({
   value,
   betterWhenPositive = true,
@@ -77,74 +86,155 @@ function DeltaBadge({
   );
 }
 
-export function ScenarioSimulator() {
-  const baselinePlan = useMemo(
-    () => generateRecoveryPlan(baselineScenario, data, SCENARIO_TODAY),
-    []
+function Lever({
+  id,
+  title,
+  description,
+  checked,
+  onCheckedChange,
+  children,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <Label htmlFor={id} className="flex flex-col items-start gap-0.5">
+          <span className="font-medium">{title}</span>
+          <span className="text-xs font-normal text-muted-foreground">{description}</span>
+        </Label>
+        <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+      </div>
+      {checked && <div className="flex flex-wrap items-center gap-4 pl-1">{children}</div>}
+    </div>
   );
+}
 
+function PercentSlider({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  prefix = "",
+}: {
+  value: number[];
+  onChange: (value: number[]) => void;
+  min: number;
+  max: number;
+  step: number;
+  prefix?: string;
+}) {
+  return (
+    <>
+      <Slider
+        value={value}
+        onValueChange={(v) => onChange(v as number[])}
+        min={min}
+        max={max}
+        step={step}
+        className="w-48"
+      />
+      <span className="w-14 text-sm text-muted-foreground">
+        {prefix}
+        {value[0]}%
+      </span>
+    </>
+  );
+}
+
+export function ScenarioSimulator() {
   const [workforceLossOn, setWorkforceLossOn] = useState(false);
   const [workforceLossPct, setWorkforceLossPct] = useState([20]);
 
   const [providerOutageOn, setProviderOutageOn] = useState(false);
   const [providerOutageId, setProviderOutageId] = useState(providers[0].id);
-  const [providerOutagePct, setProviderOutagePct] = useState([50]);
+  const [providerOutagePct, setProviderOutagePct] = useState([100]);
 
-  const [demandChangeOn, setDemandChangeOn] = useState(false);
-  const [demandChangePct, setDemandChangePct] = useState([15]);
+  const [demandMixOn, setDemandMixOn] = useState(false);
+  const [demandMixPct, setDemandMixPct] = useState<Record<Essentiality, number[]>>({
+    essential: [baselineShiftPct("essential")],
+    everyday: [baselineShiftPct("everyday")],
+    discretionary: [baselineShiftPct("discretionary")],
+  });
+
+  const [regionalOn, setRegionalOn] = useState(false);
+  const [regionalLocation, setRegionalLocation] = useState(lastMile[1].location);
+  const [regionalPct, setRegionalPct] = useState([40]);
+
+  const [lastMileOn, setLastMileOn] = useState(false);
+  const [lastMileLocation, setLastMileLocation] = useState(lastMile[0].location);
+  const [lastMilePct, setLastMilePct] = useState([50]);
 
   const [materialDelayOn, setMaterialDelayOn] = useState(false);
   const [materialDelaySku, setMaterialDelaySku] = useState(inventory[0].sku);
   const [materialDelayPct, setMaterialDelayPct] = useState([50]);
 
   const anyActive =
-    workforceLossOn || providerOutageOn || demandChangeOn || materialDelayOn;
+    workforceLossOn || providerOutageOn || demandMixOn || regionalOn || lastMileOn || materialDelayOn;
 
   const changes: ScenarioChanges = useMemo(() => {
     const labels: string[] = [];
+    const result: ScenarioChanges = {};
 
-    let workforceAvailability: ScenarioChanges["workforceAvailability"] = [];
     if (workforceLossOn) {
-      labels.push(`${workforceLossPct[0]}% additional workforce loss`);
-      workforceAvailability = workforce.map((g) => ({
-        skill: g.skill,
-        availableWorkers: Math.max(
-          0,
-          Math.round(g.availableWorkers * (1 - workforceLossPct[0] / 100))
-        ),
+      labels.push(`${workforceLossPct[0]}% more staff lost`);
+      result.workforceAvailability = workforce.map((g) => ({
+        groupId: g.id,
+        availableWorkers: Math.max(0, Math.round(g.availableWorkers * (1 - workforceLossPct[0] / 100))),
       }));
     }
 
-    let providerCapacityOverrides: ScenarioChanges["providerCapacityOverrides"] = [];
     const selectedProvider = providers.find((p) => p.id === providerOutageId);
     if (providerOutageOn && selectedProvider) {
-      labels.push(`${selectedProvider.name} capacity down ${providerOutagePct[0]}%`);
-      providerCapacityOverrides = [
+      labels.push(`${selectedProvider.name} down ${providerOutagePct[0]}%`);
+      result.providerCapacityOverrides = [
         {
           providerId: selectedProvider.id,
           availableCapacity: Math.max(
             0,
-            Math.round(
-              selectedProvider.availableCapacity * (1 - providerOutagePct[0] / 100)
-            )
+            Math.round(selectedProvider.availableCapacity * (1 - providerOutagePct[0] / 100))
           ),
         },
       ];
     }
 
-    let demandMultiplier = 1;
-    if (demandChangeOn) {
+    if (demandMixOn) {
       labels.push(
-        `${demandChangePct[0] >= 0 ? "+" : ""}${demandChangePct[0]}% demand`
+        `demand ${ESSENTIALITIES.map((e) => `${formatEssentiality(e).toLowerCase()} ${demandMixPct[e][0]}%`).join(" / ")}`
       );
-      demandMultiplier = 1 + demandChangePct[0] / 100;
+      result.demandShift = {
+        essential: demandMixPct.essential[0] / 100,
+        everyday: demandMixPct.everyday[0] / 100,
+        discretionary: demandMixPct.discretionary[0] / 100,
+      };
     }
 
-    let materialAvailabilityOverrides: ScenarioChanges["materialAvailabilityOverrides"] = [];
+    if (regionalOn) {
+      labels.push(`${regionalLocation} demand at ${regionalPct[0]}%`);
+      result.locationDemand = [{ location: regionalLocation, multiplier: regionalPct[0] / 100 }];
+    }
+
+    const lane = lastMile.find((l) => l.location === lastMileLocation);
+    if (lastMileOn && lane) {
+      labels.push(`${lane.location} couriers down ${lastMilePct[0]}%`);
+      result.lastMileOverrides = [
+        {
+          location: lane.location,
+          capacityPerDay: Math.max(0, Math.round(lane.capacityPerDay * (1 - lastMilePct[0] / 100))),
+        },
+      ];
+    }
+
     const selectedItem = inventory.find((i) => i.sku === materialDelaySku);
     if (materialDelayOn && selectedItem) {
       labels.push(`${selectedItem.sku} stock down ${materialDelayPct[0]}%`);
-      materialAvailabilityOverrides = [
+      result.materialAvailabilityOverrides = [
         {
           sku: selectedItem.sku,
           availableQuantity: Math.max(
@@ -155,37 +245,41 @@ export function ScenarioSimulator() {
       ];
     }
 
-    return {
-      name: labels.length > 0 ? labels.join(" + ") : "No changes",
-      workforceAvailability,
-      providerCapacityOverrides,
-      demandMultiplier,
-      materialAvailabilityOverrides,
-    };
+    return { ...result, name: labels.length > 0 ? labels.join(" + ") : "No changes" };
   }, [
     workforceLossOn,
     workforceLossPct,
     providerOutageOn,
     providerOutageId,
     providerOutagePct,
-    demandChangeOn,
-    demandChangePct,
+    demandMixOn,
+    demandMixPct,
+    regionalOn,
+    regionalLocation,
+    regionalPct,
+    lastMileOn,
+    lastMileLocation,
+    lastMilePct,
     materialDelayOn,
     materialDelaySku,
     materialDelayPct,
   ]);
 
-  const { scenario, comparison } = useMemo(
-    () => simulateScenario(baselineScenario, changes, data, SCENARIO_TODAY),
+  const { scenario, comparison, baselineOutlook, outlook } = useMemo(
+    () => simulateScenario(baselineScenario, changes, baseData, SCENARIO_TODAY, OUTLOOK_DAYS),
     [changes]
   );
 
   const plan = scenario.recoveryResult!;
+  const base = baselineOutlook.summary;
+  const next = outlook.summary;
 
   function resetAll() {
     setWorkforceLossOn(false);
     setProviderOutageOn(false);
-    setDemandChangeOn(false);
+    setDemandMixOn(false);
+    setRegionalOn(false);
+    setLastMileOn(false);
     setMaterialDelayOn(false);
   }
 
@@ -194,10 +288,11 @@ export function ScenarioSimulator() {
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
-            <CardTitle>Disruption controls</CardTitle>
+            <CardTitle>What could get worse</CardTitle>
             <CardDescription>
-              Toggle one or more levers to see how the recovery plan responds.
-              Everything recalculates immediately against the baseline.
+              Toggle one or more levers. Each scenario runs the daily loop
+              forward {OUTLOOK_DAYS} days — demand changes arrive as new
+              orders, and partners requested today only help tomorrow.
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={resetAll} disabled={!anyActive}>
@@ -206,168 +301,135 @@ export function ScenarioSimulator() {
           </Button>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="workforce-loss" className="flex flex-col items-start gap-0.5">
-                <span className="font-medium">Additional workforce loss</span>
-                <span className="text-xs font-normal text-muted-foreground">
-                  Applies on top of current headcount, uniformly across every skill.
-                </span>
-              </Label>
-              <Switch
-                id="workforce-loss"
-                checked={workforceLossOn}
-                onCheckedChange={setWorkforceLossOn}
-              />
-            </div>
-            {workforceLossOn && (
-              <div className="flex items-center gap-4 pl-1">
-                <Slider
-                  value={workforceLossPct}
-                  onValueChange={(v) => setWorkforceLossPct(v as number[])}
-                  min={5}
-                  max={80}
-                  step={5}
-                  className="max-w-xs"
-                />
-                <span className="w-12 text-sm text-muted-foreground">
-                  {workforceLossPct[0]}%
-                </span>
-              </div>
-            )}
-          </div>
+          <Lever
+            id="workforce-loss"
+            title="More staff lost"
+            description="On top of today's headcount, uniformly across every team."
+            checked={workforceLossOn}
+            onCheckedChange={setWorkforceLossOn}
+          >
+            <PercentSlider value={workforceLossPct} onChange={setWorkforceLossPct} min={5} max={80} step={5} />
+          </Lever>
 
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="provider-outage" className="flex flex-col items-start gap-0.5">
-                <span className="font-medium">Provider capacity loss</span>
-                <span className="text-xs font-normal text-muted-foreground">
-                  A partner loses part of its confirmed capacity.
-                </span>
-              </Label>
-              <Switch
-                id="provider-outage"
-                checked={providerOutageOn}
-                onCheckedChange={setProviderOutageOn}
-              />
-            </div>
-            {providerOutageOn && (
-              <div className="flex flex-wrap items-center gap-4 pl-1">
-                <Select
-                  value={providerOutageId}
-                  onValueChange={(v) => v && setProviderOutageId(v)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {providers.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Slider
-                  value={providerOutagePct}
-                  onValueChange={(v) => setProviderOutagePct(v as number[])}
-                  min={10}
-                  max={100}
-                  step={10}
-                  className="max-w-xs"
-                />
-                <span className="w-12 text-sm text-muted-foreground">
-                  {providerOutagePct[0]}%
-                </span>
-              </div>
-            )}
-          </div>
+          <Lever
+            id="provider-outage"
+            title="Partner capacity loss"
+            description="A partner loses part or all of its confirmed capacity."
+            checked={providerOutageOn}
+            onCheckedChange={setProviderOutageOn}
+          >
+            <Select value={providerOutageId} onValueChange={(v) => v && setProviderOutageId(v)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {providers.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <PercentSlider value={providerOutagePct} onChange={setProviderOutagePct} min={10} max={100} step={10} />
+          </Lever>
 
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="demand-change" className="flex flex-col items-start gap-0.5">
-                <span className="font-medium">Order volume change</span>
-                <span className="text-xs font-normal text-muted-foreground">
-                  Scales every order&apos;s quantity up or down.
-                </span>
-              </Label>
-              <Switch
-                id="demand-change"
-                checked={demandChangeOn}
-                onCheckedChange={setDemandChangeOn}
-              />
+          <Lever
+            id="demand-mix"
+            title="Demand mix"
+            description={`New orders as a share of pre-disruption demand. Baseline: half the customers are gone and the rest are stockpiling essentials (${ESSENTIALITIES.map((e) => `${baselineShiftPct(e)}%`).join(" / ")}).`}
+            checked={demandMixOn}
+            onCheckedChange={setDemandMixOn}
+          >
+            <div className="flex w-full flex-col gap-2">
+              {ESSENTIALITIES.map((e) => (
+                <div key={e} className="flex items-center gap-4">
+                  <span className="w-28 text-sm">{formatEssentiality(e)}</span>
+                  <PercentSlider
+                    value={demandMixPct[e]}
+                    onChange={(v) => setDemandMixPct({ ...demandMixPct, [e]: v })}
+                    min={0}
+                    max={200}
+                    step={10}
+                  />
+                </div>
+              ))}
             </div>
-            {demandChangeOn && (
-              <div className="flex items-center gap-4 pl-1">
-                <Slider
-                  value={demandChangePct}
-                  onValueChange={(v) => setDemandChangePct(v as number[])}
-                  min={-30}
-                  max={50}
-                  step={5}
-                  className="max-w-xs"
-                />
-                <span className="w-12 text-sm text-muted-foreground">
-                  {demandChangePct[0] >= 0 ? "+" : ""}
-                  {demandChangePct[0]}%
-                </span>
-              </div>
-            )}
-          </div>
+          </Lever>
 
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="material-delay" className="flex flex-col items-start gap-0.5">
-                <span className="font-medium">Material delay</span>
-                <span className="text-xs font-normal text-muted-foreground">
-                  An incoming shipment doesn&apos;t arrive — usable stock for one SKU drops.
-                </span>
-              </Label>
-              <Switch
-                id="material-delay"
-                checked={materialDelayOn}
-                onCheckedChange={setMaterialDelayOn}
-              />
-            </div>
-            {materialDelayOn && (
-              <div className="flex flex-wrap items-center gap-4 pl-1">
-                <Select
-                  value={materialDelaySku}
-                  onValueChange={(v) => v && setMaterialDelaySku(v)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inventory.map((item) => (
-                      <SelectItem key={item.sku} value={item.sku}>
-                        {item.sku}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Slider
-                  value={materialDelayPct}
-                  onValueChange={(v) => setMaterialDelayPct(v as number[])}
-                  min={10}
-                  max={100}
-                  step={10}
-                  className="max-w-xs"
-                />
-                <span className="w-12 text-sm text-muted-foreground">
-                  {materialDelayPct[0]}%
-                </span>
-              </div>
-            )}
-          </div>
+          <Lever
+            id="regional"
+            title="Regional demand collapse"
+            description="One region was hit harder — fewer people left to order."
+            checked={regionalOn}
+            onCheckedChange={setRegionalOn}
+          >
+            <Select value={regionalLocation} onValueChange={(v) => v && setRegionalLocation(v)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {lastMile.map((l) => (
+                  <SelectItem key={l.location} value={l.location}>
+                    {l.location}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <PercentSlider value={regionalPct} onChange={setRegionalPct} min={0} max={100} step={10} />
+            <span className="text-xs text-muted-foreground">of baseline demand</span>
+          </Lever>
+
+          <Lever
+            id="last-mile"
+            title="Courier capacity loss"
+            description="Fewer couriers out of one fulfilment centre."
+            checked={lastMileOn}
+            onCheckedChange={setLastMileOn}
+          >
+            <Select value={lastMileLocation} onValueChange={(v) => v && setLastMileLocation(v)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {lastMile.map((l) => (
+                  <SelectItem key={l.location} value={l.location}>
+                    {l.location}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <PercentSlider value={lastMilePct} onChange={setLastMilePct} min={10} max={100} step={10} />
+          </Lever>
+
+          <Lever
+            id="material-delay"
+            title="Material delay"
+            description="Usable stock for one SKU drops — a shipment didn't arrive."
+            checked={materialDelayOn}
+            onCheckedChange={setMaterialDelayOn}
+          >
+            <Select value={materialDelaySku} onValueChange={(v) => v && setMaterialDelaySku(v)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {inventory.map((item) => (
+                  <SelectItem key={item.sku} value={item.sku}>
+                    {item.sku}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <PercentSlider value={materialDelayPct} onChange={setMaterialDelayPct} min={10} max={100} step={10} />
+          </Lever>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Baseline vs. scenario</CardTitle>
+          <CardTitle>Baseline vs. scenario — {OUTLOOK_DAYS}-day outlook</CardTitle>
           <CardDescription>
-            {anyActive ? scenario.name : "No changes applied — scenario matches the baseline plan."}
+            {anyActive ? scenario.name : "No changes applied — scenario matches the baseline."}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -382,27 +444,43 @@ export function ScenarioSimulator() {
             </TableHeader>
             <TableBody>
               <TableRow>
-                <TableCell className="font-medium">Units fulfilled</TableCell>
-                <TableCell>{formatNumber(baselinePlan.totalExpectedFulfilment)}</TableCell>
-                <TableCell>{formatNumber(plan.totalExpectedFulfilment)}</TableCell>
+                <TableCell className="font-medium">Essential units on time</TableCell>
+                <TableCell>{formatPercent(base.essentialOnTimeRate)}</TableCell>
+                <TableCell>{formatPercent(next.essentialOnTimeRate)}</TableCell>
+                <TableCell>
+                  <DeltaBadge value={comparison.essentialOnTimeDelta} suffix=" pts" />
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell className="font-medium">Units shipped</TableCell>
+                <TableCell>{formatNumber(base.shippedUnits)}</TableCell>
+                <TableCell>{formatNumber(next.shippedUnits)}</TableCell>
                 <TableCell>
                   <DeltaBadge value={comparison.fulfilmentDelta} />
                 </TableCell>
               </TableRow>
               <TableRow>
-                <TableCell className="font-medium">Orders at risk</TableCell>
-                <TableCell>{baselinePlan.ordersAtRisk.length}</TableCell>
-                <TableCell>{plan.ordersAtRisk.length}</TableCell>
+                <TableCell className="font-medium">Backlog after {formatDay(OUTLOOK_DAYS - 1)}</TableCell>
+                <TableCell>{formatNumber(base.endBacklogUnits)}</TableCell>
+                <TableCell>{formatNumber(next.endBacklogUnits)}</TableCell>
                 <TableCell>
-                  <DeltaBadge value={comparison.atRiskCountDelta} betterWhenPositive={false} />
+                  <DeltaBadge value={comparison.endBacklogDelta} betterWhenPositive={false} />
                 </TableCell>
               </TableRow>
               <TableRow>
-                <TableCell className="font-medium">Incremental cost</TableCell>
-                <TableCell>{formatCurrency(baselinePlan.incrementalCost)}</TableCell>
-                <TableCell>{formatCurrency(plan.incrementalCost)}</TableCell>
+                <TableCell className="font-medium">Outsourcing spend</TableCell>
+                <TableCell>{formatCurrency(base.cost)}</TableCell>
+                <TableCell>{formatCurrency(next.cost)}</TableCell>
                 <TableCell>
                   <DeltaBadge value={comparison.costDelta} betterWhenPositive={false} />
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell className="font-medium">Orders not fully shipping on {formatDay(0)}</TableCell>
+                <TableCell>{baselineOutlook.plans[0].ordersAtRisk.length}</TableCell>
+                <TableCell>{plan.ordersAtRisk.length}</TableCell>
+                <TableCell>
+                  <DeltaBadge value={comparison.atRiskCountDelta} betterWhenPositive={false} />
                 </TableCell>
               </TableRow>
             </TableBody>
@@ -412,7 +490,7 @@ export function ScenarioSimulator() {
             <div className="mt-4 flex flex-col gap-2 text-sm">
               {comparison.newlyAtRiskOrders.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-muted-foreground">Newly at risk:</span>
+                  <span className="text-muted-foreground">Newly short on {formatDay(0)}:</span>
                   {comparison.newlyAtRiskOrders.map((id) => (
                     <Badge key={id} variant="destructive">
                       {id}
@@ -422,7 +500,7 @@ export function ScenarioSimulator() {
               )}
               {comparison.recoveredOrders.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-muted-foreground">Now fully recovered:</span>
+                  <span className="text-muted-foreground">Now fully shipping on {formatDay(0)}:</span>
                   {comparison.recoveredOrders.map((id) => (
                     <Badge key={id} variant="secondary">
                       {id}
@@ -437,13 +515,46 @@ export function ScenarioSimulator() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Scenario outcome</CardTitle>
+          <CardTitle>Day by day under the scenario</CardTitle>
           <CardDescription>
-            Full recovery plan under the scenario above.
+            Where the binding constraint sits each day — the thing to fix next.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <PlanSummary plan={plan} orders={orders} />
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Day</TableHead>
+                <TableHead>Ships (baseline)</TableHead>
+                <TableHead>Ships (scenario)</TableHead>
+                <TableHead>Binding constraint</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {outlook.plans.map((dayPlan, i) => (
+                <TableRow key={dayPlan.dayIndex}>
+                  <TableCell className="font-medium">{formatDay(dayPlan.dayIndex)}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {formatNumber(baselineOutlook.plans[i].totalExpectedFulfilment)}
+                  </TableCell>
+                  <TableCell>{formatNumber(dayPlan.totalExpectedFulfilment)}</TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{bindingConstraint(dayPlan, tasks).label}</Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{formatDay(0)} plan under the scenario</CardTitle>
+          <CardDescription>Full recovery plan for today under the scenario above.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PlanSummary plan={plan} />
         </CardContent>
       </Card>
     </div>

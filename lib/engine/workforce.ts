@@ -8,21 +8,35 @@ import type {
 // Total pending units that need to pass through a given task, across the
 // full order backlog. This is the raw task demand — it does not yet
 // account for inventory, provider, or staffing constraints.
-export function taskDemandVolume(taskId: string, orders: OrderGroup[]): number {
+export function taskDemandVolume(
+  taskId: string,
+  orders: Pick<OrderGroup, "requiredProcessingSteps" | "quantity">[]
+): number {
   return orders
     .filter((order) => order.requiredProcessingSteps.includes(taskId))
     .reduce((sum, order) => sum + order.quantity, 0);
 }
 
-function qualifiedWorkersForTask(
-  task: Task,
-  workforce: WorkforceGroup[]
-): WorkforceGroup[] {
-  return workforce.filter(
-    (group) =>
-      group.skill === task.requiredSkill &&
-      group.taskEligibility.includes(task.id)
+export function isPrimaryFor(group: WorkforceGroup, task: Task): boolean {
+  return (
+    group.skill === task.requiredSkill && group.taskEligibility.includes(task.id)
   );
+}
+
+// Units/shift one worker from this group adds to a task they cross-skill
+// into: fewer useful hours (ramp-up) at reduced speed.
+export function crossSkillOutputPerWorker(
+  group: WorkforceGroup,
+  taskId: string
+): number {
+  const cross = group.crossSkills.find((c) => c.taskId === taskId);
+  if (!cross) return 0;
+  const usefulHours = Math.max(0, group.hoursPerShift - cross.rampUpHours);
+  return usefulHours * group.productivityPerHour * cross.productivityFactor;
+}
+
+export function primaryOutputPerWorker(group: WorkforceGroup): number {
+  return group.hoursPerShift * group.productivityPerHour;
 }
 
 // Function A — required labour hours and staffing gap per task.
@@ -32,7 +46,8 @@ function qualifiedWorkersForTask(
 // (workers cannot be fractional). The shortfall compares that requirement
 // against workers who are both in the right skill group AND explicitly
 // eligible for the task — unqualified headcount is never counted as
-// available.
+// available. Cross-trainable workers elsewhere are reported separately,
+// since moving them costs output on the task they leave.
 export function calculateWorkforceRequirements(
   orders: OrderGroup[],
   tasks: Task[],
@@ -42,12 +57,22 @@ export function calculateWorkforceRequirements(
     const demandVolume = taskDemandVolume(task.id, orders);
     const requiredLabourHours = demandVolume * task.labourHoursPerUnit;
 
-    const qualifiedGroups = qualifiedWorkersForTask(task, workforce);
+    const qualifiedGroups = workforce.filter((g) => isPrimaryFor(g, task));
     const hoursPerShift = qualifiedGroups[0]?.hoursPerShift ?? 8;
     const availableQualifiedWorkers = qualifiedGroups.reduce(
       (sum, group) => sum + group.availableWorkers,
       0
     );
+
+    const crossTrainableWorkers = task.crossTrainingAllowed
+      ? workforce
+          .filter(
+            (g) =>
+              !isPrimaryFor(g, task) &&
+              g.crossSkills.some((c) => c.taskId === task.id)
+          )
+          .reduce((sum, g) => sum + g.availableWorkers, 0)
+      : 0;
 
     const requiredWorkers =
       hoursPerShift > 0 ? Math.ceil(requiredLabourHours / hoursPerShift) : 0;
@@ -57,8 +82,7 @@ export function calculateWorkforceRequirements(
     );
 
     const rawOutputCapacity = qualifiedGroups.reduce(
-      (sum, group) =>
-        sum + group.availableWorkers * group.hoursPerShift * group.productivityPerHour,
+      (sum, group) => sum + group.availableWorkers * primaryOutputPerWorker(group),
       0
     );
     const expectedOutputPerShift = Math.min(rawOutputCapacity, task.maxThroughput);
@@ -68,6 +92,7 @@ export function calculateWorkforceRequirements(
       requiredLabourHours,
       requiredWorkers,
       availableQualifiedWorkers,
+      crossTrainableWorkers,
       staffingShortfall,
       expectedOutputPerShift,
     };
