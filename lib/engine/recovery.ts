@@ -207,6 +207,9 @@ export function generateRecoveryPlan(
     ordersAtRisk,
     incrementalCost,
     constraintViolations,
-    generatedAt: new Date().toISOString(),
+    // Derived from the deterministic `today` reference rather than the
+    // real wall clock, so the engine stays a pure function of its inputs
+    // (and safe to call during static prerendering).
+    generatedAt: new Date(today).toISOString(),
   };
 }

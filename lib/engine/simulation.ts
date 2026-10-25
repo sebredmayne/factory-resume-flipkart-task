@@ -33,7 +33,7 @@ export function simulateScenario(
     baseline.recoveryResult ?? generateRecoveryPlan(baseline, data, today);
 
   const scenario: Scenario = {
-    id: `${baseline.id}-${Date.now()}`,
+    id: `${baseline.id}+${changes.name ?? "modified"}`,
     name: changes.name ?? `${baseline.name} (modified)`,
     workforceAvailability:
       changes.workforceAvailability ?? baseline.workforceAvailability,
