@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -5,88 +6,62 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { PlanSummary } from "@/components/recovery/plan-summary";
+import { ApprovePlanButton } from "@/components/recovery/approve-plan-button";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { orders } from "@/lib/data";
-import { formatCurrency, formatDate, formatNumber, formatPriority } from "@/lib/format";
-
-const priorityVariant: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
-  critical: "destructive",
-  high: "default",
-  standard: "secondary",
-  low: "outline",
-};
+  orders,
+  workforce,
+  tasks,
+  inventory,
+  providers,
+  baselineScenario,
+  SCENARIO_TODAY,
+} from "@/lib/data";
+import { generateRecoveryPlan, type BaseData } from "@/lib/engine";
+import { formatNumber } from "@/lib/format";
 
 export default function RecoveryPage() {
-  const sortedOrders = [...orders].sort((a, b) =>
-    a.dueAt.localeCompare(b.dueAt)
-  );
+  const data: BaseData = { orders, tasks, workforce, inventory, providers };
+  const plan = generateRecoveryPlan(baselineScenario, data, SCENARIO_TODAY);
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Recovery plan
-        </h1>
-        <p className="text-muted-foreground">
-          Combines internal staffing, outsourcing and order priorities into a
-          feasible operating plan. The generation engine lands in the next
-          build phase — this page currently shows the backlog it will need
-          to resolve.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Recovery plan
+          </h1>
+          <p className="text-muted-foreground">
+            Combines internal staffing, outsourcing, and order priorities
+            into a single feasible plan for {baselineScenario.name.toLowerCase()}.
+          </p>
+        </div>
+        <ApprovePlanButton />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Pending order backlog</CardTitle>
+          <CardTitle>{baselineScenario.name}</CardTitle>
           <CardDescription>
-            Sorted by due date. The recovery engine will decide what gets
-            fulfilled internally, what gets outsourced, and what stays at
-            risk.
+            {formatNumber(plan.internalAllocations.reduce((s, a) => s + a.allocatedWorkers, 0))}{" "}
+            workers allocated internally ·{" "}
+            {formatNumber(plan.outsourcedVolumes.reduce((s, r) => s + r.recommendedVolume, 0))}{" "}
+            units outsourced across {plan.outsourcedVolumes.length} engagements.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Order</TableHead>
-                <TableHead>SKU</TableHead>
-                <TableHead>Qty</TableHead>
-                <TableHead>Priority</TableHead>
-                <TableHead>Due</TableHead>
-                <TableHead>Location</TableHead>
-                <TableHead>Value</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedOrders.map((order) => (
-                <TableRow key={order.id}>
-                  <TableCell className="font-medium">{order.id}</TableCell>
-                  <TableCell>{order.sku}</TableCell>
-                  <TableCell>{formatNumber(order.quantity)}</TableCell>
-                  <TableCell>
-                    <Badge variant={priorityVariant[order.priority]}>
-                      {formatPriority(order.priority)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{formatDate(order.dueAt)}</TableCell>
-                  <TableCell>{order.location}</TableCell>
-                  <TableCell>
-                    {formatCurrency(order.quantity * order.unitValue)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <PlanSummary plan={plan} orders={orders} />
         </CardContent>
       </Card>
+
+      <p className="text-sm text-muted-foreground">
+        Want to see how this changes under a disruption? Head to{" "}
+        <Link href="/scenarios" className="font-medium text-foreground hover:underline">
+          Scenarios
+        </Link>{" "}
+        to simulate workforce loss, provider outages, demand spikes, or
+        material delays.
+      </p>
     </div>
   );
 }

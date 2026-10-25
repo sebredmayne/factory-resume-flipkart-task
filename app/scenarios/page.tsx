@@ -1,11 +1,4 @@
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { baselineScenario } from "@/lib/data";
+import { ScenarioSimulator } from "@/components/scenarios/scenario-simulator";
 
 export default function ScenariosPage() {
   return (
@@ -13,27 +6,12 @@ export default function ScenariosPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Scenarios</h1>
         <p className="text-muted-foreground">
-          Compare the baseline operating plan against what-if disruptions.
-          Scenario controls (workforce loss, provider outages, demand
-          spikes) are added in a later build phase.
+          Simulate a disruption on top of the current recovery plan and see
+          exactly what moves — and by how much.
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{baselineScenario.name}</CardTitle>
-          <CardDescription>
-            The current starting point. No overrides applied — demand
-            multiplier {baselineScenario.demandMultiplier}x.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          Recovery plan for this scenario has not been generated yet. Once
-          the recovery engine is wired in, this card will show expected
-          fulfilment, incremental cost and orders at risk for the baseline
-          state.
-        </CardContent>
-      </Card>
+      <ScenarioSimulator />
     </div>
   );
 }
