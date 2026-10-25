@@ -54,7 +54,7 @@ pnpm build   # production build (also type-checks)
 pnpm start   # run the production build
 pnpm test    # run the engine test suite (vitest)
 pnpm lint    # eslint
-python3 scripts/build_case_pdf.py   # rebuild the 2-page product case PDF (needs reportlab)
+python3 scripts/build_case_pdf.py   # rebuild the 2-page product case PDF (needs reportlab + pillow)
 ```
 
 ## Walking through the app
