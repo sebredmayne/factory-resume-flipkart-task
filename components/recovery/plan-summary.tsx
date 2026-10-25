@@ -15,16 +15,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { OrderGroup, Priority, RecoveryPlan } from "@/lib/types";
+import type { Essentiality, Priority, RecoveryPlan } from "@/lib/types";
 import { compareOrdersByUrgency } from "@/lib/engine";
 import {
   formatCurrency,
   formatDate,
+  formatEssentiality,
+  formatLimitingFactor,
   formatNumber,
+  formatPercent,
   formatPriority,
 } from "@/lib/format";
 
-const priorityVariant: Record<
+export const priorityVariant: Record<
   Priority,
   "destructive" | "default" | "secondary" | "outline"
 > = {
@@ -34,25 +37,29 @@ const priorityVariant: Record<
   low: "outline",
 };
 
-const limitingFactorLabel: Record<string, string> = {
-  capacity: "Capacity",
-  inventory: "Inventory",
-  none: "—",
-};
+export function EssentialityBadge({ essentiality }: { essentiality: Essentiality }) {
+  return (
+    <Badge variant={essentiality === "essential" ? "default" : "outline"}>
+      {formatEssentiality(essentiality)}
+    </Badge>
+  );
+}
 
 interface PlanSummaryProps {
   plan: RecoveryPlan;
-  orders: OrderGroup[];
 }
 
 // Shared, presentation-only rendering of a recovery plan's outcome — used
-// by the static baseline view (Recovery Plan page) and the interactive
-// scenario simulator, so both always show the same shape of result.
-export function PlanSummary({ plan, orders }: PlanSummaryProps) {
+// by the Recovery Plan page, the daily loop and the scenario simulator, so
+// all three always show the same shape of result. Orders come from the
+// plan itself: they're the prioritised backlog the engine planned against.
+export function PlanSummary({ plan }: PlanSummaryProps) {
+  const orders = plan.orders;
   const totalRequested = orders.reduce((sum, o) => sum + o.quantity, 0);
-  const fulfilmentPercent = totalRequested
-    ? Math.round((plan.totalExpectedFulfilment / totalRequested) * 100)
-    : 0;
+  const fulfilmentRatio = totalRequested ? plan.totalExpectedFulfilment / totalRequested : 0;
+  const essentialRatio = plan.essentialUnitsRequested
+    ? plan.essentialUnitsFulfilled / plan.essentialUnitsRequested
+    : 1;
 
   const orderById = new Map(orders.map((o) => [o.id, o] as const));
   const sortedFulfilment = [...plan.orderFulfilment].sort((a, b) =>
@@ -61,30 +68,40 @@ export function PlanSummary({ plan, orders }: PlanSummaryProps) {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
         <div>
-          <p className="text-xs text-muted-foreground">Fulfilled</p>
+          <p className="text-xs text-muted-foreground">Ships today</p>
           <p className="text-xl font-semibold">
-            {fulfilmentPercent}%{" "}
+            {formatPercent(fulfilmentRatio)}{" "}
             <span className="text-sm font-normal text-muted-foreground">
               ({formatNumber(plan.totalExpectedFulfilment)} units)
             </span>
           </p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Unfulfilled demand</p>
+          <p className="text-xs text-muted-foreground">Essentials shipped</p>
+          <p className="text-xl font-semibold">
+            {formatPercent(essentialRatio)}{" "}
+            <span className="text-sm font-normal text-muted-foreground">
+              ({formatNumber(plan.essentialUnitsFulfilled)} /{" "}
+              {formatNumber(plan.essentialUnitsRequested)})
+            </span>
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Rolls to tomorrow</p>
           <p className="text-xl font-semibold">
             {formatNumber(plan.unfulfilledDemand)}
           </p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Orders at risk</p>
+          <p className="text-xs text-muted-foreground">Orders not fully shipped</p>
           <p className="text-xl font-semibold">
             {plan.ordersAtRisk.length} / {orders.length}
           </p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Incremental cost</p>
+          <p className="text-xs text-muted-foreground">Outsourcing spend</p>
           <p className="text-xl font-semibold">
             {formatCurrency(plan.incrementalCost)}
           </p>
@@ -97,10 +114,12 @@ export function PlanSummary({ plan, orders }: PlanSummaryProps) {
           <TableHeader>
             <TableRow>
               <TableHead>Order</TableHead>
+              <TableHead>SKU</TableHead>
+              <TableHead>Need</TableHead>
               <TableHead>Priority</TableHead>
               <TableHead>Due</TableHead>
               <TableHead>Requested</TableHead>
-              <TableHead>Fulfilled</TableHead>
+              <TableHead>Ships</TableHead>
               <TableHead>Shortfall</TableHead>
               <TableHead>Limiting factor</TableHead>
             </TableRow>
@@ -111,10 +130,19 @@ export function PlanSummary({ plan, orders }: PlanSummaryProps) {
               return (
                 <TableRow key={f.orderId}>
                   <TableCell className="font-medium">{f.orderId}</TableCell>
+                  <TableCell className="text-muted-foreground">{order.sku}</TableCell>
                   <TableCell>
-                    <Badge variant={priorityVariant[order.priority]}>
-                      {formatPriority(order.priority)}
-                    </Badge>
+                    <EssentialityBadge essentiality={order.essentiality} />
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-col gap-0.5">
+                      <Badge variant={priorityVariant[order.priority]}>
+                        {formatPriority(order.priority)}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {order.priorityReason}
+                      </span>
+                    </div>
                   </TableCell>
                   <TableCell>{formatDate(order.dueAt)}</TableCell>
                   <TableCell>{formatNumber(f.requestedQuantity)}</TableCell>
@@ -127,7 +155,7 @@ export function PlanSummary({ plan, orders }: PlanSummaryProps) {
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {limitingFactorLabel[f.limitingFactor]}
+                    {formatLimitingFactor(f.limitingFactor)}
                   </TableCell>
                 </TableRow>
               );
@@ -161,7 +189,6 @@ export function PlanSummaryCard({
   title,
   description,
   plan,
-  orders,
 }: PlanSummaryProps & { title: string; description?: string }) {
   return (
     <Card>
@@ -170,7 +197,7 @@ export function PlanSummaryCard({
         {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
       <CardContent>
-        <PlanSummary plan={plan} orders={orders} />
+        <PlanSummary plan={plan} />
       </CardContent>
     </Card>
   );

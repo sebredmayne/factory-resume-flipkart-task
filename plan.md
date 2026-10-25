@@ -1,5 +1,11 @@
 # Factory Resume — Product & Engineering Build Plan
 
+> **Note:** this is the original build brief, kept for reference. The
+> product has since been reworked around cross-skilled redeployment,
+> needs-based priority and a daily re-planning loop, and the optional AI
+> explanation layer (section 7) was not built. See `README.md` and the
+> product case PDF for the current scope.
+
 ## 1. Product definition
 
 **Factory Resume is an AI-powered operations recovery and capacity optimisation tool for e-commerce businesses.**

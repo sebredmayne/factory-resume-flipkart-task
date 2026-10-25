@@ -39,3 +39,33 @@ const SKILL_LABEL: Record<string, string> = {
 export function formatSkill(skill: string): string {
   return SKILL_LABEL[skill] ?? skill;
 }
+
+const ESSENTIALITY_LABEL: Record<string, string> = {
+  essential: "Essential",
+  everyday: "Everyday",
+  discretionary: "Discretionary",
+};
+
+export function formatEssentiality(essentiality: string): string {
+  return ESSENTIALITY_LABEL[essentiality] ?? essentiality;
+}
+
+const LIMITING_FACTOR_LABEL: Record<string, string> = {
+  capacity: "Capacity",
+  inventory: "Inventory",
+  last_mile: "Last mile",
+  none: "—",
+};
+
+export function formatLimitingFactor(factor: string): string {
+  return LIMITING_FACTOR_LABEL[factor] ?? factor;
+}
+
+export function formatPercent(ratio: number): string {
+  return `${Math.round(ratio * 100)}%`;
+}
+
+// Day indexes are 0-based in the engine; managers count from Day 1.
+export function formatDay(dayIndex: number): string {
+  return `Day ${dayIndex + 1}`;
+}

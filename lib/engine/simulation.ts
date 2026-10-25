@@ -1,6 +1,6 @@
 import type { Scenario, ScenarioComparison } from "@/lib/types";
 import type { BaseData } from "@/lib/engine/recovery";
-import { generateRecoveryPlan } from "@/lib/engine/recovery";
+import { projectOutlook, type Outlook } from "@/lib/engine/daily";
 
 export type ScenarioChanges = Partial<
   Pick<
@@ -8,29 +8,34 @@ export type ScenarioChanges = Partial<
     | "name"
     | "workforceAvailability"
     | "providerCapacityOverrides"
-    | "demandMultiplier"
     | "materialAvailabilityOverrides"
+    | "lastMileOverrides"
+    | "demandShift"
+    | "locationDemand"
   >
 >;
 
 export interface SimulationResult {
   scenario: Scenario;
   comparison: ScenarioComparison;
+  baselineOutlook: Outlook;
+  outlook: Outlook;
 }
 
-// Function E — applies changes on top of a baseline scenario, reruns the
-// recovery engine, and reports how the outcome moved relative to the
-// baseline. Each override list is replaced wholesale when provided (the
-// caller is expected to pass the full desired override set, e.g. the
-// baseline's overrides plus the new change).
+// Function E — applies changes on top of a baseline scenario, runs the
+// daily loop forward over the outlook window for both, and reports how the
+// outcome moved. Comparing outlooks rather than a single shift matters:
+// demand shifts only show up as new orders arrive, and partners requested
+// today only help tomorrow. Each override list is replaced wholesale when
+// provided (the caller passes the full desired override set).
 export function simulateScenario(
   baseline: Scenario,
   changes: ScenarioChanges,
   data: BaseData,
-  today: string
+  today: string,
+  days = 3
 ): SimulationResult {
-  const baselineResult =
-    baseline.recoveryResult ?? generateRecoveryPlan(baseline, data, today);
+  const baselineOutlook = projectOutlook(data, baseline, today, days);
 
   const scenario: Scenario = {
     id: `${baseline.id}+${changes.name ?? "modified"}`,
@@ -39,29 +44,37 @@ export function simulateScenario(
       changes.workforceAvailability ?? baseline.workforceAvailability,
     providerCapacityOverrides:
       changes.providerCapacityOverrides ?? baseline.providerCapacityOverrides,
-    demandMultiplier: changes.demandMultiplier ?? baseline.demandMultiplier,
     materialAvailabilityOverrides:
       changes.materialAvailabilityOverrides ??
       baseline.materialAvailabilityOverrides,
+    lastMileOverrides: changes.lastMileOverrides ?? baseline.lastMileOverrides,
+    demandShift: changes.demandShift ?? baseline.demandShift,
+    locationDemand: changes.locationDemand ?? baseline.locationDemand,
     recoveryResult: null,
   };
 
-  const result = generateRecoveryPlan(scenario, data, today);
-  scenario.recoveryResult = result;
+  const outlook = projectOutlook(data, scenario, today, days);
+  scenario.recoveryResult = outlook.plans[0];
 
+  const baseToday = baselineOutlook.plans[0];
+  const scenarioToday = outlook.plans[0];
   const comparison: ScenarioComparison = {
-    fulfilmentDelta:
-      result.totalExpectedFulfilment - baselineResult.totalExpectedFulfilment,
-    costDelta: result.incrementalCost - baselineResult.incrementalCost,
+    fulfilmentDelta: outlook.summary.shippedUnits - baselineOutlook.summary.shippedUnits,
+    costDelta: outlook.summary.cost - baselineOutlook.summary.cost,
     atRiskCountDelta:
-      result.ordersAtRisk.length - baselineResult.ordersAtRisk.length,
-    newlyAtRiskOrders: result.ordersAtRisk.filter(
-      (id) => !baselineResult.ordersAtRisk.includes(id)
+      scenarioToday.ordersAtRisk.length - baseToday.ordersAtRisk.length,
+    essentialOnTimeDelta: Math.round(
+      (outlook.summary.essentialOnTimeRate - baselineOutlook.summary.essentialOnTimeRate) * 100
     ),
-    recoveredOrders: baselineResult.ordersAtRisk.filter(
-      (id) => !result.ordersAtRisk.includes(id)
+    endBacklogDelta:
+      outlook.summary.endBacklogUnits - baselineOutlook.summary.endBacklogUnits,
+    newlyAtRiskOrders: scenarioToday.ordersAtRisk.filter(
+      (id) => !baseToday.ordersAtRisk.includes(id)
+    ),
+    recoveredOrders: baseToday.ordersAtRisk.filter(
+      (id) => !scenarioToday.ordersAtRisk.includes(id)
     ),
   };
 
-  return { scenario, comparison };
+  return { scenario, comparison, baselineOutlook, outlook };
 }

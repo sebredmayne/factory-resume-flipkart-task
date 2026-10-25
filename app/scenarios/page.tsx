@@ -6,8 +6,9 @@ export default function ScenariosPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Scenarios</h1>
         <p className="text-muted-foreground">
-          Simulate a disruption on top of the current recovery plan and see
-          exactly what moves — and by how much.
+          Stress-test the next five days before committing: what happens if
+          more staff don&apos;t return, a partner drops out, couriers thin out,
+          or demand shifts again.
         </p>
       </div>
 
