@@ -61,6 +61,18 @@ export default function OutsourcingPage() {
         </p>
       </div>
 
+      {plan.outsourcedVolumes.length === 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>No outsourcing needed</CardTitle>
+            <CardDescription>
+              Internal capacity currently covers demand for every
+              outsourcing-eligible task under this plan.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
       {tasks
         .filter((task) => recommendationsByTask.has(task.id))
         .map((task) => {
